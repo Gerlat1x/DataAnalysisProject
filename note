@@ -1,0 +1,22 @@
+src/
+├─ utils/                      # 真·通用层（无领域、无I/O）
+│  ├─ __init__.py
+│  ├─ strings.py               # 文本与正则、小工具
+│  ├─ dates.py                 # 纯日期/时间算法（不读文件）
+│  ├─ mathx.py                 # 数值/统计纯函数
+│  └─ typing.py                # TypedDict/Protocol 等类型声明（可选）
+├─ infra/                      # I/O 与系统耦合层
+│  ├─ __init__.py
+│  ├─ files.py                 # 读写Excel/CSV/Parquet、路径、缓存
+│  ├─ excel.py                 # excel相关引擎选择、sheet读取
+│  └─ logging.py               # 日志/计时装饰器
+├─ dataops/                    # 数据加工（领域无关）
+│  ├─ __init__.py
+│  ├─ columns.py               # 列名标准化映射
+│  ├─ schema.py                # 面板校验/Schema/约束
+│  ├─ ohlc.py                  # OHLC/前复权/补齐等
+│  └─ panel.py                 # 截面拼接、排序、校验整合
+└─ feed.py / model.py / ...
+以上是暂定的项目结构
+
+机器学习量化模型技术验证型0.01
