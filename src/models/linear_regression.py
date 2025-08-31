@@ -167,3 +167,8 @@ class SafeLinearRegressionPipeline:
         df = df.dropna(subset=lag_features)
 
         return self.model.predict(df)
+
+
+from . import MODEL_REGISTRY
+
+MODEL_REGISTRY["LinearRegression"] = LinearRegressionModel

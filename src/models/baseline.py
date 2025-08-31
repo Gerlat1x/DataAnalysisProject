@@ -38,4 +38,3 @@ def evaluate_baseline(df: pd.DataFrame) -> dict:
         "MAE": float(mae),
         "MAPE_%": float(mape),
     }
-

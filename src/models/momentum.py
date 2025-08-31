@@ -62,3 +62,8 @@ class MomentumModel:
 
         # 返回以 symbol 为索引的 Series
         return latest.set_index("symbol")["score"].rename("score")
+
+
+from . import MODEL_REGISTRY
+
+MODEL_REGISTRY["Momentum"] = MomentumModel
