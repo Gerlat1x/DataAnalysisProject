@@ -1,4 +1,2 @@
 model:
-  type: "Momentum"
-report:
-  out_dir: reports
+  type: "PctChg"
