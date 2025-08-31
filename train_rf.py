@@ -1,3 +1,5 @@
+import numpy as np
+
 from src.models.random_forest import SafeRandomForestPipeline
 import pandas as pd
 
@@ -13,22 +15,33 @@ import pandas as pd
 # 1) 读取数据（按需修改路径）
 df = pd.read_parquet("data/processed/panel.parquet")
 
+if not pd.api.types.is_datetime64_dtype(df["datetime"]):
+    df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+df = df.sort_values(["symbol", "datetime"]).reset_index(drop=True)
+
+pre = df["pre_close"].replace(0, np.nan)
+df["ret1"] = df["close"] / pre - 1.0  # 1 日收益率
+df = df.dropna(subset=["ret1"])  # 丢弃 pre_close=0 的行
+
 # 2) 选择特征列（若没有 volume_std 会自动在 pipeline 内回退到 volume）
 features = ["open", "high", "low", "volume_std", "amount"]
 
 # 3) 初始化流水线（保持与 random_forest_pipeline.py 中示例一致）
 
-df["ret1"] = df["close"] / df["pre_close"] - 1.0  # 1 日收益率
 
 pipeline = SafeRandomForestPipeline(
-    features=["open","high","low","volume_std","amount"],
+    features=features,
     target="ret1",
-    lags=(1,),                 # 使用 1 日滞后
-    add_rolling=True,          # 添加滚动统计特征
-    rolling_windows=(5, 20),   # 5/20 日均值与波动
-    clip_outliers=True,        # 缩尾极端值
+    lags=(1,),  # 先用 lag1，后续再加 (1,2,5)
+    add_rolling=True,  # 滚动统计
+    rolling_windows=(5, 20),
+    clip_outliers=True,  # 缩尾极端值
     log_volume=True,
     log_amount=True,
+    # 更稳的随机森林参数（可按需调整）
+    rf_n_estimators=600,
+    rf_max_depth=None,  # None = 不限制深度（配合 min_samples_leaf）
+    rf_min_samples_leaf=5,
 )
 
 # 4) 训练（内部按时间顺序 80/20 切分）
@@ -42,24 +55,18 @@ print(pipeline.report())
 rf = pipeline.report().get("random_forest", {})
 bl = pipeline.report().get("naive_baseline", {})
 metrics = ["R2", "RMSE", "MAE", "MAPE_%", "MSE"]
-rows = []
-for m in metrics:
-    rows.append({"metric": m,
-                 "random_forest": rf.get(m, None),
-                 "naive_baseline": bl.get(m, None)})
-compare_df = pd.DataFrame(rows).set_index("metric")
+compare_df = pd.DataFrame(
+    [{"metric": m, "random_forest": rf.get(m), "naive_baseline": bl.get(m)} for m in metrics]
+).set_index("metric")
 print("\n==== 随机森林 vs Naive baseline ====")
 print(compare_df)
 
-# 7) 查看特征重要性（取前 20 个）
+# 6) 特征重要性（Top 20）
 print("\n==== 特征重要性（Top 20） ====")
 print(pipeline.feature_importances().head(20))
 
-# 8) 预测：对全量 df 预测，再对目标索引取子集
-#    这样能保证滞后/滚动特征有充足历史，不会出现 0 样本。
+# 7) 预测：全量预测，再映射到原始最后 20 行索引
 pred_all = pipeline.predict(df)
-
-# 举例：取原始数据最后 20 行对应的预测结果（可能跨多个 symbol）
 last_idx = df.tail(20).index
 pred_tail20 = pred_all.loc[pred_all.index.intersection(last_idx)]
 print("\n==== 预测结果（映射到原始最后20行索引） ====")
