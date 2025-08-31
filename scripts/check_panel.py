@@ -2,21 +2,7 @@ import pandas as pd
 
 df = pd.read_parquet("../data/processed/panel.parquet")
 
-ratio = (df['amount'] / (df['close'] * df['volume'].replace(0, pd.NA))).groupby(df['symbol']).median()
 
-# 转成数值型，忽略非数值
-ratio = pd.to_numeric(ratio, errors="coerce")
-
-# 生成单位映射表（1 或 100）
-unit_map = ratio.round().astype("Int64").to_dict()
-
-# 映射到原表
-df['vol_unit'] = df['symbol'].map(unit_map).fillna(1).astype(int)
-
-# 统一换算为股
-df['volume_std'] = df['volume'] * df['vol_unit']
-
-print(ratio.value_counts().head(10))
 
 # print("行数/列数:", df.shape)
 # print("日期范围:", df['datetime'].min(), "→", df['datetime'].max())
