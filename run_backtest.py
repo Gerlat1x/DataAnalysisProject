@@ -1,6 +1,7 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from src.broker import SimpleBroker
 from src.models.momentum import MomentumModel
 from src.decisions.equal_weight import TopKEqualWeightDecision
@@ -40,6 +41,12 @@ def main():
     trades, equity = broker.simulate(panel, signals)
     print("Trades sample:\n", trades.head())
     print("Equity curve tail:\n", equity.tail())
+
+    equity.set_index("datetime")["equity"].plot(title="Equity Curve")
+    plt.xlabel("Date")
+    plt.ylabel("Equity")
+    plt.tight_layout()
+    plt.show()
 
 
 if __name__ == "__main__":
