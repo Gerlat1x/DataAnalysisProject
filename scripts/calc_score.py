@@ -1,6 +1,6 @@
 import pandas as pd
 
-from models import create_model
+from src.models import create_model
 
 
 def main():

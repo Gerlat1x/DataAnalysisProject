@@ -1,5 +1,5 @@
 import pandas as pd
-from models.momentum import MomentumModel
+from src.models import MomentumModel
 
 # 构造测试数据
 data = [
