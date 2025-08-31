@@ -83,8 +83,8 @@ def _add_group_rollings(df: pd.DataFrame, group_col: str, cols: Iterable[str], w
         win = f"roll{w}"
         for c in cols:
             g = df.groupby(group_col)[c]
-            df[f"{c}_{win}_mean"] = g.transform(lambda s: s.rolling(w, min_periods=max(1, w//2)).mean())
-            df[f"{c}_{win}_std"]  = g.transform(lambda s: s.rolling(w, min_periods=max(1, w//2)).std())
+            df[f"{c}_{win}_mean"] = g.transform(lambda s: s.rolling(w, min_periods=max(1, w // 2)).mean())
+            df[f"{c}_{win}_std"] = g.transform(lambda s: s.rolling(w, min_periods=max(1, w // 2)).std())
     return df
 
 
@@ -111,24 +111,24 @@ def _evaluate(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
 
 @dataclass
 class SafeRandomForestPipeline:
-    features: List[str]                   # 输入特征列（原始）
-    target: str = "close"                 # 预测目标（默认收盘价）
-    group_col: str = "symbol"            # 分组列（标的代码）
-    lags: Tuple[int, ...] = (1,)          # 滞后阶数
-    add_rolling: bool = True              # 是否生成滚动统计特征
+    features: List[str]  # 输入特征列（原始）
+    target: str = "close",  # 预测目标（默认收盘价）
+    group_col: str = "symbol"  # 分组列（标的代码）
+    lags: Tuple[int, ...] = (1, 2, 5)  # 滞后阶数
+    add_rolling: bool = True  # 是否生成滚动统计特征
     rolling_windows: Tuple[int, ...] = (5, 20)  # 滚动窗口
-    clip_outliers: bool = True            # 是否缩尾处理极端值
+    clip_outliers: bool = True  # 是否缩尾处理极端值
     outlier_q: Tuple[float, float] = (0.01, 0.99)
-    log_volume: bool = True               # 是否对成交量做 log1p
-    log_amount: bool = True               # 是否对成交额做 log1p
-    rf_n_estimators: int = 300            # 随机森林树数
-    rf_max_depth: Optional[int] = 12      # 最大深度
-    rf_min_samples_leaf: int = 3          # 叶子最小样本数
-    rf_n_jobs: int = -1                   # 并行线程数
-    random_state: int = 42                # 随机种子
-    use_target_lag_as_feature: bool = True
+    log_volume: bool = True  # 是否对成交量做 log1p
+    log_amount: bool = True  # 是否对成交额做 log1p
+    rf_n_estimators: int = 600  # 随机森林树数
+    rf_max_depth: Optional[int] = None  # 最大深度
+    rf_min_samples_leaf: int = 5  # 叶子最小样本数
+    rf_n_jobs: int = -1  # 并行线程数
+    random_state: int = 42  # 随机种子
 
     # 训练后填充
+    use_target_lag_as_feature: bool = True
     model_: Optional[RandomForestRegressor] = None
     train_idx_: Optional[pd.Index] = None
     test_idx_: Optional[pd.Index] = None
@@ -223,8 +223,8 @@ class SafeRandomForestPipeline:
 
         X_train = train[used_features].to_numpy(dtype=float)
         y_train = train[self.target].to_numpy(dtype=float)
-        X_test  = test[used_features].to_numpy(dtype=float)
-        y_test  = test[self.target].to_numpy(dtype=float)
+        X_test = test[used_features].to_numpy(dtype=float)
+        y_test = test[self.target].to_numpy(dtype=float)
 
         rf = RandomForestRegressor(
             n_estimators=self.rf_n_estimators,

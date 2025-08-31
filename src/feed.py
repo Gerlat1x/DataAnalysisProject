@@ -21,7 +21,8 @@ class ExcelDailyFeed:
         self._i = 0
 
     def __iter__(self):
-        self._i = 0; return self
+        self._i = 0;
+        return self
 
     def __next__(self) -> Tuple[pd.Timestamp, pd.DataFrame]:
         if self._i >= len(self.pairs): raise StopIteration
