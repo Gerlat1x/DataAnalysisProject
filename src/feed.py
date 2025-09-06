@@ -11,6 +11,7 @@ from src.infra.files import list_excels_sorted
 from src.dataops.ohlc import ensure_required_ohlc
 from src.dataops.panel import attach_trade_date, validate_panel_schema
 from src.dataops.columns import standardize_sheet
+from src.dataops.filters import mark_st_flags
 
 
 class ExcelDailyFeed:
@@ -37,6 +38,7 @@ class ExcelDailyFeed:
                 if isinstance(v, pd.DataFrame) and len(v.dropna(how="all")):
                     df_raw = v
                     break
+
         df = standardize_sheet(df_raw).dropna(subset=["symbol"])
         df = ensure_required_ohlc(df)
         df = attach_trade_date(df, trade_date)
@@ -44,6 +46,7 @@ class ExcelDailyFeed:
         base = ["datetime", "symbol", "open", "high", "low", "close", "volume", "amount", "pre_close", "name"]
         base = [c for c in base if c in df.columns]
         df = df[base + [c for c in df.columns if c not in base]]
+
         if "symbol" not in df.columns:
             # 打印原始列名帮助定位（可临时保留，排查完再移除）
             raise ValueError(
@@ -53,16 +56,13 @@ class ExcelDailyFeed:
 
         df = df.dropna(subset=["symbol"])
 
-        if "name" in df.columns:
-            before = len(df)
-            mask = ~df["name"].astype(str).str.contains(
-                r"^(?:ST)|(?:\*ST)", regex=True, case=False, na=False
-            )
-            df = df.loc[mask].reset_index(drop=True)
-            removed = before - len(df)
-            if removed > 0:
-                print(f"[{trade_date.date()}] Removed {removed} ST/*ST stocks")
-
+        before = len(df)
+        df = mark_st_flags(df, name_col="name")
+        if "is_st" in df.columns:
+            df = df.loc[~df["is_st"]].copy()
+        removed = before - len(df)
+        if removed > 0:
+            print(f"[{trade_date.date()}] Removed {removed} ST/*ST/risk-warning stocks")
         if self.sort_by_symbol and "symbol" in df.columns:
             df = df.sort_values("symbol").reset_index(drop=True)
         return df
