@@ -35,7 +35,7 @@ class ExcelDailyFeed:
         if isinstance(df_raw, dict):  # 多sheet时取首个非空
             for v in df_raw.values():
                 if isinstance(v, pd.DataFrame) and len(v.dropna(how="all")):
-                    df_raw = v;
+                    df_raw = v
                     break
         df = standardize_sheet(df_raw).dropna(subset=["symbol"])
         df = ensure_required_ohlc(df)
@@ -52,6 +52,17 @@ class ExcelDailyFeed:
             )
 
         df = df.dropna(subset=["symbol"])
+
+        if "name" in df.columns:
+            before = len(df)
+            mask = ~df["name"].astype(str).str.contains(
+                r"^(?:ST)|(?:\*ST)", regex=True, case=False, na=False
+            )
+            df = df.loc[mask].reset_index(drop=True)
+            removed = before - len(df)
+            if removed > 0:
+                print(f"[{trade_date.date()}] Removed {removed} ST/*ST stocks")
+
         if self.sort_by_symbol and "symbol" in df.columns:
             df = df.sort_values("symbol").reset_index(drop=True)
         return df
