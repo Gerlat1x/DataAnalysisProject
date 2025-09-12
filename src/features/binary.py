@@ -19,14 +19,14 @@ def _compute_rsi(ret: pd.Series, period: int = 14) -> pd.Series:
         ret (pd.Series): 过去的收益率，防止泄露未来信息给模型
     """
     gain = ret.clip(lower=0)
-    loss = (-ret).clip(upper=0)
+    loss = (-ret).clip(lower=0.0)
 
     avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
     avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
 
-    rs = avg_gain / (avg_loss.replace(0, np.nan))
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
-    return rsi
+    return rsi.fillna(50)   # 无法计算时返回中性值 50
 
 
 def make_binary_dataset(
