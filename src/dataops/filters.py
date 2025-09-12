@@ -29,16 +29,6 @@ def is_st_like_name(name: str, risk_keywords: tuple = RISK_KEYWORDS) -> bool:
         if kw in s:
             return True
     return False
-    # if not isinstance(name, str):
-    #     return False
-    # s = name.strip().upper().replace("＊", "*").replace("ＳＴ", "ST")
-    # if "ST" in s:  # 只要包含 ST / *ST 就标记
-    #     return True
-    # for kw in RISK_KEYWORDS:
-    #     if kw in s:
-    #         return True
-    # return False
-
 
 def mark_st_flags(df: pd.DataFrame,
                   name_col: str = "name",
