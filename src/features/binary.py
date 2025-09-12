@@ -66,7 +66,7 @@ def make_binary_dataset(
         past_high = g["high"].shift(1) if "high" in g.columns else None
         past_low = g["low"].shift(1) if "low" in g.columns else None
         past_vol = g[volume_col].shift(1) if volume_col in g.columns else None
-
+        past_ma_close_w = past_close.rolling(window, min_periods=window).mean()
         past_ret_1d = past_close / past_close.shift(1) - 1
 
         roll_ret = past_ret_1d.rolling(window, min_periods=window)
@@ -77,7 +77,8 @@ def make_binary_dataset(
         g["f_ret_std_w"] = roll_ret.std()
 
         g["f_ma_close_w"] = roll_close.mean()
-        g["f_close_over_ma"] = g["close"] / g["f_ma_close_w"]
+        # g["f_close_over_ma"] = g["close"] / g["f_ma_close_w"]
+        g["f_close_over_ma_prev"] = past_close / past_ma_close_w
 
         for k in (5, 10, 20):
             g[f"f_mom_{k}"] = past_close / past_close.shift(k) - 1
@@ -118,7 +119,7 @@ def make_binary_dataset(
             date_col, symbol_col, "open", "high", "low", "close", volume_col
         ] if c in g.columns]
         feats = [c for c in g.columns if c.startswith("f_")]
-        return g[keep + feats + ["label"]]
+        return g[[date_col, symbol_col] + feats + ["label"]]
 
     parts = []
     for sym, g in df.groupby(symbol_col, group_keys=False):

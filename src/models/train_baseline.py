@@ -10,7 +10,7 @@ LEAKY_COLS = []
 # LEAKY_COLS = ["f_gap_open"]
 
 drop_cols = ["datetime", "symbol"] + LEAKY_COLS
-features = [c for c in df.columns if c not in drop_cols + ["label"]]
+features = [c for c in df.columns if c.startswith("f_")]
 X = df[features].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 y = df["label"].astype(int)
 dates = pd.to_datetime(df["datetime"])
