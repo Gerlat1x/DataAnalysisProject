@@ -14,7 +14,8 @@ try:
 except Exception:
     pass
 
-DB_PATH = "../../data/processed/db.sqlite3"
+# DB_PATH = "../../data/processed/db.sqlite3"
+DB_PATH = "db.sqlite3"
 ALLOWED_EXCH = {"NYSE", "NASDAQ", "ARCA", "AMEX", "BATS", "IEX"}
 
 API_KEY = os.getenv("APCA_API_KEY_ID")
@@ -40,7 +41,6 @@ def get_conn():
     return conn
 
 
-# ---------- schema ----------
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bars_1d(
   symbol TEXT NOT NULL,
@@ -79,12 +79,19 @@ def ensure_schema():
         c.executescript(SCHEMA)
 
 
-# ---------- utils ----------
 def chunk(lst: List[str], n: int) -> List[List[str]]:
     return [lst[i:i + n] for i in range(0, len(lst), n)]
 
 
-# ---------- assets ----------
+def resolve_symbols(include_otc: bool, limit_symbols: Optional[int], symbols_arg: Optional[str]) -> List[str]:
+    """
+    优先使用 --symbols 白名单；否则回退到可交易清单（主板/非OTC）。
+    """
+    if symbols_arg:
+        return [s.strip().upper() for s in symbols_arg.split(",") if s.strip()]
+    return list_tradable_symbols(include_otc, limit_symbols)
+
+
 def list_tradable_symbols(include_otc: bool, limit_symbols: Optional[int]) -> List[str]:
     url = f"{TRADING_BASE}/v2/assets"
     params = {"status": "active", "asset_class": "us_equity"}
@@ -109,7 +116,6 @@ def list_tradable_symbols(include_otc: bool, limit_symbols: Optional[int]) -> Li
     return sorted(set(out))
 
 
-# ---------- bars ----------
 def fetch_bars_daily_batch(symbols: List[str], start_date: str, end_date: str) -> List[Dict]:
     if not symbols: return []
     rows, token = [], None
@@ -120,14 +126,15 @@ def fetch_bars_daily_batch(symbols: List[str], start_date: str, end_date: str) -
         "start": f"{start_date}T00:00:00Z",
         "end": f"{end_date}T23:59:59Z",
         "limit": 10000,
-        "adjustment": "raw",  # 我们自行复权
+        "adjustment": "raw",
         "feed": DATA_FEED
     }
     for attempt in range(8):
         try:
             while True:
                 cur = dict(params)
-                if token: cur["page_token"] = token
+                if token:
+                    cur["page_token"] = token
                 resp = requests.get(url, headers=HDR, params=cur, timeout=30)
                 if resp.status_code == 429:
                     time.sleep(min(60, 0.5 * (2 ** attempt)))
@@ -168,94 +175,128 @@ def upsert_bars(rows: List[Dict]):
         conn.commit()
 
 
-# ---------- corporate actions ----------
 def fetch_corporate_actions(start: str, end: str, symbols: Optional[List[str]] = None) -> List[Dict]:
-    """
-    新接口：/v1/corporate-actions
-    允许按 types / start / end / symbols 过滤（官方称支持多过滤）。
-    返回统一结构的 list：{symbol, ex_date, ca_type, old_rate, new_rate, cash, ...}
-    """
     url = f"{DATA_BASE}/v1/corporate-actions"
-    types = "forward_split,reverse_split,cash_dividend"
-    rows: List[Dict] = []
-    # 尝试批量 symbols 过滤，分块以控制 URL 长度
-    sym_chunks = [None] if not symbols else chunk(symbols, 200)
 
-    for syms in sym_chunks:
-        token = None
-        while True:
-            params = {
-                "types": types,
-                "start": start,
-                "end": end,
-                "limit": 1000,
-            }
-            if syms:
-                params["symbols"] = ",".join(syms)
-            if token:
-                params["page_token"] = token
+    TYPES = "forward_split,reverse_split,unit_split,stock_dividend,cash_dividend"
 
-            resp = requests.get(url, headers=HDR, params=params, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
+    def request_once(need_types: bool, syms_chunk: Optional[List[str]]):
+        params = {"start": start, "end": end, "limit": 1000}
+        if need_types:
+            params["types"] = TYPES
+        if syms_chunk:
+            params["symbols"] = ",".join(syms_chunk)
+        resp = requests.get(url, headers=HDR, params=params, timeout=30)
+        if resp.status_code == 400 and need_types:
+            raise RuntimeError(f"CA 400 types: {resp.text}")
+        resp.raise_for_status()
+        return resp.json()
 
-            # 兼容不同结构：有的返回 {'corporate_actions': {...}}，有的直接平铺
-            cas_root = data.get("corporate_actions", data)
+    def _normalize_corporate_actions_payload(data):
+        flat = []
+        if isinstance(data, dict) and isinstance(data.get("corporate_actions"), dict):
+            root = data["corporate_actions"]
+            groups = ("forward_splits", "reverse_splits", "unit_splits", "stock_dividends", "cash_dividends")
+            for g in groups:
+                for x in root.get(g, []) or []:
+                    y = dict(x);
+                    y["type"] = g
+                    flat.append(y)
+        elif isinstance(data, list):
+            flat = data
+        else:
+            flat = data.get("data") or data.get("items") or []
 
-            # 可能按类型分组
-            def _items(name):
-                v = cas_root.get(name, [])
-                return v if isinstance(v, list) else []
+        out = []
+        for x in flat:
+            t = str(x.get("type", "")).lower()
+            sym = x.get("symbol") or x.get("ticker")
+            exd = x.get("ex_date") or x.get("exDate")
+            if not sym or not exd:
+                continue
 
-            forward_splits = _items("forward_splits")
-            reverse_splits = _items("reverse_splits")
-            cash_dividends = _items("cash_dividends") or _items("dividends")
+            # --- 拆分 / 送股（按比率 old/new 处理） ---
+            if ("split" in t) or (t == "stock_dividends"):
+                old_r = x.get("old_rate") or x.get("oldRate")
+                new_r = x.get("new_rate") or x.get("newRate")
+                # 有些 stock_dividend 可能不给 old/new，只给 'rate'（比如 0.1 表示 10% 送股）
+                if (old_r is None or new_r is None) and ("stock_dividend" in t):
+                    try:
+                        r = float(x.get("rate"))
+                        old_r, new_r = 1.0, 1.0 + r
+                    except Exception:
+                        old_r = new_r = None
+                try:
+                    if old_r is not None and new_r is not None:
+                        out.append({
+                            "symbol": sym, "ex_date": exd, "ca_type": "split",
+                            "old_rate": float(old_r), "new_rate": float(new_r),
+                            "cash": None,
+                            "record_date": x.get("record_date"), "payable_date": x.get("payable_date"),
+                            "process_date": x.get("process_date"), "raw_json": str(x)
+                        })
+                except Exception:
+                    pass
+                continue
 
-            def norm_split(x, kind):
-                return {
-                    "symbol": x.get("symbol"),
-                    "ex_date": x.get("ex_date"),
-                    "ca_type": "split",
-                    "old_rate": float(x.get("old_rate", 1) or 1),
-                    "new_rate": float(x.get("new_rate", 1) or 1),
-                    "cash": None,
-                    "record_date": x.get("record_date"),
-                    "payable_date": x.get("payable_date"),
-                    "process_date": x.get("process_date"),
-                    "raw_json": str(x),
-                    "_kind": kind
-                }
-
-            def norm_div(x):
-                amt = x.get("amount") or x.get("cash")
+            # --- 现金分红（金额可能叫 amount/cash/rate） ---
+            if ("cash_dividend" in t) or ("dividend" in t and "cash" in str(x).lower()):
+                amt = x.get("amount")
+                if amt is None: amt = x.get("cash")
+                if amt is None: amt = x.get("rate")
                 try:
                     amt = float(amt) if amt is not None else None
-                except:
+                except Exception:
                     amt = None
-                return {
-                    "symbol": x.get("symbol"),
-                    "ex_date": x.get("ex_date"),
-                    "ca_type": "dividend",
-                    "old_rate": None,
-                    "new_rate": None,
-                    "cash": amt,
-                    "record_date": x.get("record_date"),
-                    "payable_date": x.get("payable_date"),
-                    "process_date": x.get("process_date"),
-                    "raw_json": str(x),
-                    "_kind": "cash_dividend"
-                }
+                if amt is not None:
+                    out.append({
+                        "symbol": sym, "ex_date": exd, "ca_type": "dividend",
+                        "old_rate": None, "new_rate": None, "cash": amt,
+                        "record_date": x.get("record_date"), "payable_date": x.get("payable_date"),
+                        "process_date": x.get("process_date"), "raw_json": str(x)
+                    })
+                continue
+        return out
 
-            for x in forward_splits: rows.append(norm_split(x, "forward"))
-            for x in reverse_splits: rows.append(norm_split(x, "reverse"))
-            for x in cash_dividends: rows.append(norm_div(x))
+    rows: List[Dict] = []
+    sym_chunks = [None] if not symbols else chunk(symbols, 200)
+    for syms in sym_chunks:
+        page_token = None
+        need_types = True  # 先带 types；遇到 400 再回退
+        while True:
+            try:
+                data = request_once(need_types, syms)
+            except RuntimeError as e:  # 400：types 不被接受
+                need_types = False
+                data = request_once(need_types, syms)
+            rows.extend(_normalize_corporate_actions_payload(data))
+            # 分页（若存在）
+            if isinstance(data, dict):
+                page_token = data.get("next_page_token")
+                if page_token:
+                    # 下一页再拉：注意附加 page_token
+                    # 为简洁起见，直接重调 request（Alpaca 大多是基于 token 的）
+                    # 这里也可把 page_token 放在 params 里继续循环
+                    params = {"start": start, "end": end, "limit": 1000, "page_token": page_token}
+                    if need_types: params["types"] = TYPES
+                    if syms: params["symbols"] = ",".join(syms)
+                    resp = requests.get(url, headers=HDR, params=params, timeout=30)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    rows.extend(_normalize_corporate_actions_payload(data))
+                    page_token = data.get("next_page_token")
+                    if page_token:
+                        continue
+            break
 
-            token = data.get("next_page_token")
-            if not token: break
-
-    # 清洗：去掉缺 symbol/ex_date 的项
-    rows = [r for r in rows if r["symbol"] and r["ex_date"]]
-    return rows
+    seen = set()
+    uniq = []
+    for r in rows:
+        key = (r["symbol"], r["ex_date"], r["ca_type"])
+        if key not in seen:
+            seen.add(key);
+            uniq.append(r)
+    return uniq
 
 
 def upsert_corporate_actions(rows: List[Dict]):
@@ -278,7 +319,6 @@ def upsert_corporate_actions(rows: List[Dict]):
         conn.commit()
 
 
-# ---------- adjustment ----------
 def _build_split_factors(events: List[Dict]) -> List[Tuple[str, float]]:
     """返回 (ex_date, factor_before) 列表。factor_before 作用于 ex_date 之前的所有历史：
        2拆1(new=2,old=1) => 历史乘 (old/new)=0.5； 1并10(new=1,old=10) => 历史乘 (old/new)=10
@@ -390,11 +430,11 @@ def recompute_adjusted_for_symbol(symbol: str):
         conn.commit()
 
 
-# ---------- high-level flows ----------
-def init_full(start: str, end: Optional[str], include_otc: bool, limit_symbols: Optional[int], batch: int):
+def init_full(start: str, end: Optional[str], include_otc: bool, limit_symbols: Optional[int], batch: int,
+              symbols_arg: Optional[str] = None):
     ensure_schema()
     end = end or utc_today()
-    syms = list_tradable_symbols(include_otc, limit_symbols)
+    syms = resolve_symbols(include_otc, limit_symbols, symbols_arg)
     print(f"[init] symbols={len(syms)} range={start}..{end} feed={DATA_FEED} otc={include_otc}")
 
     # 1) bars
@@ -417,12 +457,13 @@ def init_full(start: str, end: Optional[str], include_otc: bool, limit_symbols: 
         print(f"    adjust [{k}/{(len(syms) + 49) // 50}]")
 
 
-def daily_update(days_back: int, include_otc: bool, limit_symbols: Optional[int], batch: int):
+def daily_update(days_back: int, include_otc: bool, limit_symbols: Optional[int], batch: int,
+                 symbols_arg: Optional[str] = None):
     ensure_schema()
     end_d = datetime.now(timezone.utc).date()
     start_d = end_d - timedelta(days=days_back)
     s, e = start_d.strftime("%Y-%m-%d"), end_d.strftime("%Y-%m-%d")
-    syms = list_tradable_symbols(include_otc, limit_symbols)
+    syms = resolve_symbols(include_otc, limit_symbols, symbols_arg)
     print(f"[update] symbols={len(syms)} range={s}..{e} feed={DATA_FEED} otc={include_otc}")
 
     # bars
@@ -472,23 +513,42 @@ def main():
     p_init.add_argument("--include-otc", action="store_true")
     p_init.add_argument("--limit-symbols", type=int, default=None, help="只取前N个标的做测试")
     p_init.add_argument("--batch", type=int, default=50, help="每次请求最多N个symbol")
+    p_init.add_argument("--symbols", help="逗号分隔的标的清单，如 AAPL,TSLA,SPY")
 
     p_upd = sub.add_parser("update", help="补最近N天 + 更新公司行动 + 重算复权")
     p_upd.add_argument("--days", type=int, default=3)
     p_upd.add_argument("--include-otc", action="store_true")
     p_upd.add_argument("--limit-symbols", type=int, default=None)
     p_upd.add_argument("--batch", type=int, default=50)
+    p_upd.add_argument("--symbols", help="逗号分隔的标的清单，如 AAPL,TSLA,SPY")
 
     p_adj = sub.add_parser("adjust", help="仅重算复权列")
     p_adj.add_argument("--symbol", default=None)
 
+    p_ca = sub.add_parser("ca", help="仅回填公司行动（可选立即重算）")
+    p_ca.add_argument("--symbols", required=True, help="逗号分隔，如 AAPL,TSLA,SPY")
+    p_ca.add_argument("--start", required=True, help="YYYY-MM-DD")
+    p_ca.add_argument("--end", required=True, help="YYYY-MM-DD")
+    p_ca.add_argument("--adjust", action="store_true", help="回填后立即对这些票重算复权")
+
     args = ap.parse_args()
     if args.cmd == "init":
-        init_full(args.start, args.end, args.include_otc, args.limit_symbols, args.batch)
+        init_full(args.start, args.end, args.include_otc, args.limit_symbols, args.batch, symbols_arg=args.symbols)
     elif args.cmd == "update":
-        daily_update(args.days, args.include_otc, args.limit_symbols, args.batch)
+        daily_update(args.days, args.include_otc, args.limit_symbols, args.batch, symbols_arg=args.symbols)
     elif args.cmd == "adjust":
         adjust(args.symbol)
+    elif args.cmd == "ca":
+        syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+        ensure_schema()
+        print(f"[ca] backfill CA for {len(syms)} symbols, {args.start}..{args.end}")
+        cas = fetch_corporate_actions(args.start, args.end, syms)
+        upsert_corporate_actions(cas)
+        print(f"[ca] upserted CA rows: {len(cas)}")
+        if args.adjust:
+            for s in syms:
+                recompute_adjusted_for_symbol(s)
+            print(f"[ca] adjusted {len(syms)} symbols")
 
 
 if __name__ == "__main__":
